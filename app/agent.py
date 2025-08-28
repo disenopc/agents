@@ -1,216 +1,159 @@
 import os
 import time
-import argparse
-from typing import TypedDict, List, Dict, Any, Optional
+import random
+import re
+from urllib.parse import urlparse
 
 import pandas as pd
+import requests
 from dotenv import load_dotenv
-from duckduckgo_search import DDGS
-from langgraph.graph import StateGraph, END
 
-# OpenAI es opcional: si tienes OPENAI_API_KEY, lo usamos para desambiguar
-LLM_AVAILABLE = False
-try:
-    from langchain_openai import ChatOpenAI
-    if os.getenv("OPENAI_API_KEY"):
-        LLM_AVAILABLE = True
-except Exception:
-    LLM_AVAILABLE = False
-
+# Cargar API keys desde .env
+load_dotenv()
+API_KEY = os.getenv("GOOGLE_API_KEY")
+CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # -----------------------------
-# Definición de estado LangGraph
+# Funciones de scoring
 # -----------------------------
-class Row(TypedDict, total=False):
-    consulta: str
-    url: Optional[str]
-    candidatos: List[Dict[str, str]]
-    notas: Optional[str]
+def generar_consultas_optimizadas(consulta_original: str):
+    consulta_clean = consulta_original.strip()
+    consultas = [
+        f'"{consulta_clean}" official website',
+        f'{consulta_clean} official site',
+        f'{consulta_clean} homepage',
+        f'{consulta_clean} company website',
+        f'{consulta_clean} .com site:',
+        f'{consulta_clean} software company',
+        f'{consulta_clean} technology company'
+    ]
+    return consultas
 
-class AgentState(TypedDict, total=False):
-    rows: List[Row]
-    i: int
-    input_path: str
-    query_column: str
-    output_path: str
+def es_sitio_oficial(url: str, domain: str, title: str, snippet: str, consulta: str) -> int:
+    score = 0
+    consulta_lower = consulta.lower()
+    domain_lower = domain.lower()
+    title_lower = title.lower()
+    snippet_lower = snippet.lower()
+    
+    consulta_base = re.sub(r'\b(software|hardware|inc|corp|ltd|llc|sa|srl|gmbh|ag)\b', '', consulta_lower).strip()
+    palabras_consulta = [p for p in consulta_base.split() if len(p) > 2]
 
+    for palabra in palabras_consulta:
+        if palabra in domain_lower:
+            score += 25
+    if any(domain_lower.startswith(f"{palabra}.") or f".{palabra}." in domain_lower for palabra in palabras_consulta):
+        score += 40
+    if domain.endswith(('.com', '.net', '.org', '.io', '.tech')):
+        score += 15
+    social_platforms = [
+        'facebook.com', 'twitter.com', 'linkedin.com', 'youtube.com', 'instagram.com',
+        'wikipedia.org', 'crunchbase.com', 'bloomberg.com', 'reuters.com',
+        'amazon.com', 'ebay.com', 'alibaba.com', 'github.com'
+    ]
+    for platform in social_platforms:
+        if platform in domain_lower:
+            score -= 30
+            break
+    official_words = ['official', 'homepage', 'home page', 'corporate', 'company']
+    if any(word in title_lower for word in official_words):
+        score += 10
+    palabras_en_titulo = sum(1 for palabra in palabras_consulta if palabra in title_lower)
+    score += palabras_en_titulo * 5
+    subdomain_penalties = ['support.', 'help.', 'docs.', 'forum.', 'community.', 'blog.']
+    if any(sub in domain_lower for sub in subdomain_penalties):
+        score -= 10
+    if url.count('/') > 3:
+        score -= 5
+    if url.startswith('https://'):
+        score += 5
+    return max(0, min(100, score))
 
-# -----------------------------
-# Nodos del grafo
-# -----------------------------
-def cargar_excel(state: AgentState) -> AgentState:
-    df = pd.read_excel(state["input_path"])
-    col = state["query_column"]
-    if col not in df.columns:
-        raise ValueError(
-            f"La columna '{col}' no existe en {state['input_path']}. "
-            f"Columnas disponibles: {list(df.columns)}"
-        )
-
-    # Normalizamos filas
-    rows: List[Row] = []
-    for val in df[col].fillna(""):
-        consulta = str(val).strip()
-        rows.append({"consulta": consulta})
-
-    state["rows"] = rows
-    state["i"] = 0
-    return state
-
-
-def buscar_web(state: AgentState) -> AgentState:
-    idx = state["i"]
-    fila = state["rows"][idx]
-    consulta = fila.get("consulta", "")
-
-    if not consulta:
-        fila["url"] = None
-        fila["notas"] = "consulta vacía"
-        return state
-
-    # DuckDuckGo (resultados en español; puedes ajustar 'region')
-    with DDGS() as ddg:
-        resultados = list(ddg.text(
-            consulta,
-            region="en-uk",
-            safesearch="moderate",
-            max_results=8,
-            backend="html"
-        ))
-
-    candidatos = []
-    for r in resultados:
-        # La lib retorna 'title','href','body'
-        href = r.get("href")
-        if href:
-            candidatos.append({
-                "title": r.get("title", ""),
-                "href": href,
-                "snippet": r.get("body", "")
-            })
-
-    fila["candidatos"] = candidatos
-
-    # Heurística rápida: nos quedamos con el 1º candidato si no hay LLM
-    fila["url"] = candidatos[0]["href"] if candidatos else None
+def seleccionar_mejor_url_oficial(consulta: str, candidatos):
     if not candidatos:
-        fila["notas"] = "sin resultados"
-
-    # Respetar un pequeño delay para no ser agresivos con el buscador
-    time.sleep(3)
-    return state
-
-
-def desambiguar_con_llm(state: AgentState) -> AgentState:
-    if not LLM_AVAILABLE:
-        return state
-
-    idx = state["i"]
-    fila = state["rows"][idx]
-    consulta = fila.get("consulta", "")
-    candidatos = fila.get("candidatos", [])
-
-    if not candidatos:
-        return state
-
-    # Pedimos al LLM elegir un único URL oficial
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    opciones = "\n".join(f"- {c['href']} :: {c['title']}" for c in candidatos[:6])
-    prompt = (
-        "Eres un asistente que selecciona el sitio web oficial de una entidad.\n"
-        f"Consulta: {consulta}\n"
-        "Candidatos (URL :: título):\n"
-        f"{opciones}\n\n"
-        "Devuelve SOLO el URL oficial más probable. Si dudas, elige el dominio primario "
-        "(no redes sociales ni páginas internas). Responde con una única línea que sea el URL."
-    )
-    try:
-        resp = llm.invoke(prompt).content.strip()
-        # Tomamos el primer token que parece URL
-        fila["url"] = resp.split()[0]
-        fila["notas"] = "url seleccionada por LLM"
-    except Exception as e:
-        fila["notas"] = f"fallback heurístico (error LLM: {e})"
-        # ya quedó la heurística del nodo anterior
-    return state
-
-
-def avanzar(state: AgentState) -> AgentState:
-    state["i"] += 1
-    return state
-
-
-def deberia_continuar(state: AgentState) -> str:
-    return "buscar" if state["i"] < len(state["rows"]) else "escribir"
-
-
-def escribir_salida(state: AgentState) -> AgentState:
-    df = pd.read_excel(state["input_path"])
-    urls = [r.get("url") for r in state["rows"]]
-    notas = [r.get("notas") for r in state["rows"]]
-    df["url_encontrada"] = urls
-    df["notas"] = notas
-    os.makedirs(os.path.dirname(state["output_path"]) or ".", exist_ok=True)
-    df.to_excel(state["output_path"], index=False)
-    print(f"✅ Archivo generado: {state['output_path']}")
-    return state
-
+        return None, "sin candidatos"
+    scored_candidates = []
+    for item in candidatos:
+        url = item.get("href", "")
+        title = item.get("title", "")
+        snippet = item.get("snippet", "")
+        domain = item.get("displayLink", "")
+        if not url:
+            continue
+        score = es_sitio_oficial(url, domain, title, snippet, consulta)
+        scored_candidates.append({"score": score, "url": url, "domain": domain})
+    if not scored_candidates:
+        return None, "sin candidatos válidos"
+    scored_candidates.sort(key=lambda x: x['score'], reverse=True)
+    best = scored_candidates[0]
+    return best['url'], f"score {best['score']}, domain: {best['domain']}"
 
 # -----------------------------
-# Construcción del grafo
+# Función para Google CSE
 # -----------------------------
-def construir_grafo():
-    graph = StateGraph(AgentState)
+def buscar_con_google_cse_multiples(consultas):
+    todos_candidatos = []
+    urls_vistas = set()
+    for query in consultas[:3]:  # hasta 3 consultas
+        try:
+            url = "https://www.googleapis.com/customsearch/v1"
+            params = {
+                'key': API_KEY,
+                'cx': CSE_ID,
+                'q': query,
+                'num': 5,
+                'safe': 'medium'
+            }
+            response = requests.get(url, params=params, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                for item in data.get('items', []):
+                    href = item.get("link", "")
+                    if href and href not in urls_vistas:
+                        candidato = {
+                            "title": item.get("title", ""),
+                            "href": href,
+                            "snippet": item.get("snippet", ""),
+                            "displayLink": item.get("displayLink", "")
+                        }
+                        todos_candidatos.append(candidato)
+                        urls_vistas.add(href)
+            elif response.status_code == 429:
+                print("Rate limit, esperando 30s...")
+                time.sleep(30)
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error en consulta '{query}': {e}")
+    return todos_candidatos
 
-    graph.add_node("cargar", cargar_excel)
-    graph.add_node("buscar", buscar_web)
-    graph.add_node("desambiguar", desambiguar_con_llm)
-    graph.add_node("avanzar", avanzar)
-    graph.add_node("escribir", escribir_salida)
+# -----------------------------
+# Flujo principal
+# -----------------------------
+def main():
+    input_excel = "./app/entrada.xlsx"
+    output_excel = "./app/salidas_con_urls.xlsx"
 
-    graph.set_entry_point("cargar")
+    df = pd.read_excel(input_excel)
+    df['url_oficial'] = None
+    df['notas_busqueda'] = None
 
-    # Al terminar de cargar, si hay filas -> buscar, si no -> escribir
-    def after_load(state: AgentState) -> str:
-        return "buscar" if state.get("rows") else "escribir"
+    for idx, row in df.iterrows():
+        consulta = str(row[df.columns[0]]).strip()
+        if not consulta:
+            df.at[idx, 'notas_busqueda'] = "consulta vacía"
+            continue
 
-    graph.add_conditional_edges("cargar", after_load, {
-        "buscar": "buscar",
-        "escribir": "escribir",
-    })
+        print(f"\nBuscando sitio oficial de: {consulta}")
+        consultas = generar_consultas_optimizadas(consulta)
+        candidatos = buscar_con_google_cse_multiples(consultas)
+        url, notas = seleccionar_mejor_url_oficial(consulta, candidatos)
+        df.at[idx, 'url_oficial'] = url
+        df.at[idx, 'notas_busqueda'] = notas
+        print(f"→ {url} ({notas})")
+        time.sleep(random.uniform(2,4))  # delay entre consultas
 
-    # buscar -> desambiguar -> avanzar
-    graph.add_edge("buscar", "desambiguar")
-    graph.add_edge("desambiguar", "avanzar")
-
-    # bucle mientras haya filas
-    graph.add_conditional_edges("avanzar", deberia_continuar, {
-        "buscar": "buscar",
-        "escribir": "escribir",
-    })
-
-    graph.add_edge("escribir", END)
-
-    return graph.compile()
-
-
-def run(input_path: str, query_column: str, output_path: str):
-    app = construir_grafo()
-    initial_state: AgentState = {
-        "input_path": input_path,
-        "query_column": query_column,
-        "output_path": output_path
-    }
-    app.invoke(initial_state)
-
+    df.to_excel(output_excel, index=False)
+    print(f"\n✅ Resultados guardados en '{output_excel}'")
 
 if __name__ == "__main__":
-    load_dotenv()
-
-    parser = argparse.ArgumentParser(description="Agente LangGraph: Excel -> URL oficial")
-    parser.add_argument("--input", default=os.getenv("INPUT_EXCEL", "app/entrada.xlsx"))
-    parser.add_argument("--query-column", default=os.getenv("QUERY_COLUMN", "consulta"))
-    parser.add_argument("--output", default=os.getenv("OUTPUT_EXCEL", "app/salida_urls.xlsx"))
-    args = parser.parse_args()
-
-    run(args.input, args.query_column, args.output)
+    main()
