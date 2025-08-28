@@ -1,6 +1,6 @@
 # Official Company Website Finder
 
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)  
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)  
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 This project allows you to automatically search for the official websites of companies using **Google Custom Search Engine (CSE)** and a scoring system to determine the most likely official URL.
