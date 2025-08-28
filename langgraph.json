@@ -1,0 +1,45 @@
+{
+  "dependencies": ["."],
+  "graph": {
+    "nodes": [
+      {
+        "name": "cargar",
+        "function": "cargar_excel",
+        "next": ["buscar", "escribir"]
+      },
+      {
+        "name": "buscar",
+        "function": "buscar_web",
+        "next": ["desambiguar"]
+      },
+      {
+        "name": "desambiguar",
+        "function": "desambiguar_con_llm",
+        "next": ["avanzar"]
+      },
+      {
+        "name": "avanzar",
+        "function": "avanzar",
+        "next": ["buscar", "escribir"]
+      },
+      {
+        "name": "escribir",
+        "function": "escribir_salida",
+        "next": ["END"]
+      }
+    ],
+    "entry_point": "cargar",
+    "end_node": "END"
+  },
+  "files": {
+    "main_script": "app/main.py",
+    "input_example": "app/entrada.xlsx",
+    "output_example": "app/salida_urls.xlsx"
+  },
+  "folders": [
+    "app",
+    "app/data",
+    "app/output"
+  ],
+  "python_version": "3.11"
+}
