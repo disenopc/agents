@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-# Cargar API keys desde .env
+# Load API keys from .env
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
 CSE_ID = os.getenv("GOOGLE_CSE_ID")
@@ -89,7 +89,7 @@ def seleccionar_mejor_url_oficial(consulta: str, candidatos):
     return best['url'], f"score {best['score']}, domain: {best['domain']}"
 
 # -----------------------------
-# Función para Google CSE
+# Function for Google CSE
 # -----------------------------
 def buscar_con_google_cse_multiples(consultas):
     todos_candidatos = []
@@ -127,11 +127,11 @@ def buscar_con_google_cse_multiples(consultas):
     return todos_candidatos
 
 # -----------------------------
-# Flujo principal
+# Main flow
 # -----------------------------
 def main():
-    input_excel = "./app/entrada.xlsx"
-    output_excel = "./app/salidas_con_urls.xlsx"
+    input_excel = "./app/input.xlsx"
+    output_excel = "./app/output_con_urls.xlsx"
 
     df = pd.read_excel(input_excel)
     df['url_oficial'] = None

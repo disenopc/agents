@@ -26,17 +26,17 @@ This project allows you to automatically search for the official websites of com
 
 ### Create environment from scratch
 
-# Crear el entorno desde cero con Python 3.11
+# Create the environment from scratch with Python 3.11
 conda create -n prov python=3.11
 
-# Activar el entorno
+# Activate the environment
 conda activate prov
 
-# Instalar paquetes útiles
+# Install useful packages
 conda install -c conda-forge poetry
 
-# Instalar OpenAI y LangChain si planeas usar LLM para clasificación
+# Install OpenAI and LangChain if you plan to use LLM for classification
 conda install -c conda-forge poetry 
 
-# Instalar herramientas opcionales
+# Install optional tools and generate environment.yml from the install history
 conda env export --from-history > environment.yml
