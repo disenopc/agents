@@ -24,7 +24,7 @@ for i, url in enumerate(df['Website']):
 
 
 # Guardar a Excel
-excel_file = 'clientes_verificados.xlsx'
+excel_file = 'verified_clients.xlsx'
 df.to_excel(excel_file, index=False)
 
 # Abrir el Excel para aplicar color
@@ -44,4 +44,4 @@ for row in range(2, ws.max_row + 1):  # asumiendo que la primera fila es encabez
             ws.cell(row=row, column=col).fill = yellow_fill
 
 wb.save(excel_file)
-print("Archivo clientes_verificados.xlsx generado con errores resaltados.")
+print("Generated file clients_verified.xlsx with errors highlighted.")
